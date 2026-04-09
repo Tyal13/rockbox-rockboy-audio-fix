@@ -1,12 +1,16 @@
 # Rockbox Rockboy Audio Fix
 
-**Fixing the broken audio in Rockbox's Gameboy/GBC emulator (rockboy) on iPod Classic.**
+**Fixing the broken audio in Rockbox's built-in handheld console emulator (rockboy) on iPod Classic.**
 
-Rockboy ships with Rockbox and can play .gb and .gbc ROMs, but the audio is severely degraded on many targets, especially the iPod Classic. This project identifies the root causes and provides patches to fix them.
+Rockboy ships as part of the open-source [Rockbox firmware](https://www.rockbox.org/) and can play compatible ROM files. However, the audio is severely degraded on many targets, especially the iPod Classic. This project identifies the root causes and provides patches to fix them.
 
 ## The Problem
 
-Rockboy audio on iPod Classic 7G sounds harsh, crackly, and distorted. The Gameboy has iconic sound (think Pokemon battle music, Zelda overworld theme) and it deserves to be heard properly.
+Rockboy audio on iPod Classic 7G sounds harsh, crackly, and distorted. The original handheld had clean, warm chiptune audio. The emulator should reproduce that faithfully.
+
+## Legal Notice
+
+This project modifies only the open-source Rockbox emulator plugin code (GPL v2). No ROMs, game files, copyrighted assets, or proprietary code are included, distributed, or referenced in this repository. Users are responsible for sourcing their own legally obtained ROM files. This project does not facilitate, encourage, or assist with obtaining copyrighted software.
 
 ## Root Cause Analysis
 
@@ -39,7 +43,7 @@ All in `apps/plugins/rockboy/` in the [Rockbox source tree](https://github.com/R
 | File | Role |
 |------|------|
 | `rbsound.c` | Rockbox PCM audio bridge (bugs 1-4) |
-| `sound.c` | Gameboy sound channel emulation (bugs 5-6) |
+| `sound.c` | Sound channel emulation (bugs 5-6) |
 | `emu.c` | Main emulation loop, timing |
 | `rockmacros.h` | Configuration and options |
 
@@ -87,10 +91,7 @@ Tested on:
 - iPod Classic 7th Gen (S5L8702, 216MHz ARM926, 64MB RAM)
 - Rockbox 4.0
 
-Test ROMs:
-- Pokemon Crystal (.gbc): Complex audio with all 4 sound channels
-- Tetris (.gb): Simple but iconic audio, easy to hear artifacts
-- The Legend of Zelda: Link's Awakening (.gb): Rich soundtrack
+Testing uses legally obtained ROM files with varied audio complexity to verify all 4 sound channels render correctly.
 
 ## Roadmap
 
@@ -117,4 +118,4 @@ Patches are GPL v2, matching the Rockbox project license.
 
 - **Adam Herrmann** ([@Tyal13](https://github.com/Tyal13)): Research and patches
 - **Rockbox Project**: Open-source firmware
-- **gnuboy**: Original Gameboy emulator that rockboy is based on
+- **gnuboy**: Original emulator that rockboy is based on
