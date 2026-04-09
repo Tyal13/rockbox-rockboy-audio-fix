@@ -1,8 +1,12 @@
 # Rockbox Rockboy Audio Fix
 
-**Fixing the broken audio in Rockbox's built-in handheld console emulator (rockboy) on iPod Classic.**
+**Fixing the broken audio in Rockbox's built-in Gameboy emulator (rockboy) on iPod Classic and other affected targets.**
 
-Rockboy ships as part of the open-source [Rockbox firmware](https://www.rockbox.org/) and can play compatible ROM files. However, the audio is severely degraded on many targets, especially the iPod Classic. This project identifies the root causes and provides patches to fix them.
+[![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
+[![Target: iPod Classic 7G](https://img.shields.io/badge/Target-iPod%20Classic%207G-silver)](https://www.rockbox.org/wiki/IpodClassic)
+[![Rockbox: 4.0](https://img.shields.io/badge/Rockbox-4.0-orange)](https://www.rockbox.org)
+
+Rockboy ships as part of the open-source [Rockbox firmware](https://www.rockbox.org/) and can play Gameboy and Gameboy Color ROM files. However, the audio is severely degraded on many targets — especially iPod Classic. This project identifies the root causes and provides fixed source files and a compiled plugin.
 
 ## The Problem
 
@@ -93,17 +97,28 @@ Tested on:
 
 Testing uses legally obtained ROM files with varied audio complexity to verify all 4 sound channels render correctly.
 
+## Quick Install (Pre-built Binary)
+
+> For iPod Classic 6G or 7G running Rockbox 4.0.
+
+1. Download `rockboy-ipod6g.rock` from [Releases](https://github.com/Tyal13/rockbox-rockboy-audio-fix/releases)
+2. Copy to your iPod: `.rockbox/rocks/games/rockboy.rock`
+3. Eject, power cycle, launch a `.gb` or `.gbc` file from the Rockbox file browser
+
+Full build-from-source instructions: [docs/BUILD.md](docs/BUILD.md)
+
+---
+
 ## Roadmap
 
 - [x] Root cause analysis of audio bugs
-- [ ] Fix 1: Sample rate correction
-- [ ] Fix 2: Proper double-buffering
-- [ ] Fix 3: ARM memory barriers
-- [ ] Fix 4: Semaphore-based sync
-- [ ] Fix 5: Fixed-point sample rate calculation
-- [ ] Fix 6: Simple low-pass anti-aliasing filter
-- [ ] Testing on real hardware
-- [ ] Submit patches upstream to Rockbox project
+- [x] Fix 1: Sample rate correction (11025 Hz forced → 44100 Hz)
+- [x] Fix 2: Proper ping-pong double-buffering
+- [x] Fix 3: Volatile ISR synchronization flag
+- [x] Fix 4: Yield-loop timeout
+- [x] Fix 5: Eliminate redundant hwbuf copy
+- [ ] Testing compiled binary on real iPod hardware
+- [ ] Submit patches upstream to Rockbox project via Gerrit
 
 ## Related Projects
 

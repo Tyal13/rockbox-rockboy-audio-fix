@@ -1,0 +1,12 @@
+# Rockbox source tree (too large, clone separately)
+rockbox/
+
+# Toolchain build output
+build/toolchain/
+
+# macOS
+.DS_Store
+
+# Temp / originals
+*.orig
+*.bak
