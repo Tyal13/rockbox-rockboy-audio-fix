@@ -106,7 +106,27 @@ diskutil eject /Volumes/IPOD
 | Error | Fix |
 |-------|-----|
 | `arm-elf-eabi-gcc: not found` | Add `$HOME/rockbox-toolchain/arm-elf-eabi/bin` to `$PATH` |
-| `invalid host type` in configure | Your `RBDEV_PREFIX` path contains spaces -- use a path without spaces |
+| `invalid host type` in configure | `RBDEV_PREFIX` path contains spaces (e.g. Google Drive path) -- use a space-free path like `$HOME/rockbox-toolchain` |
+| `unrecognized command-line option '-fbracket-depth=512'` | `rockboxdev.sh` passes a Clang-only flag to GCC. Fix: `export CXXFLAGS="-std=gnu++03"` before running the script |
 | `automake: not found` | `brew install automake autoconf` |
 | `gsed: not found` | `brew install gnu-sed` |
 | `greadlink: not found` | `brew install coreutils` |
+| `makeinfo: not found` | `brew install texinfo` |
+
+### macOS + Homebrew GCC 15 full setup
+
+```bash
+brew install gnu-sed coreutils gmp mpfr libmpc isl texinfo gcc automake autoconf wget
+
+export RBDEV_PREFIX="$HOME/rockbox-toolchain"   # NO spaces in path
+export CC=gcc-15
+export CXX=g++-15
+export CXXFLAGS="-std=gnu++03"                   # Prevent clang-only flag injection
+export RBDEV_DOWNLOAD="/tmp/rbdev-dl"
+export PATH="/opt/homebrew/opt/gnu-sed/libexec/gnubin:\
+/opt/homebrew/opt/coreutils/libexec/gnubin:\
+/opt/homebrew/opt/texinfo/bin:\
+/opt/homebrew/bin:$PATH"
+
+echo "a" | bash rockboxdev.sh
+```
