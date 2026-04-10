@@ -120,6 +120,14 @@ Full build-from-source instructions: [docs/BUILD.md](docs/BUILD.md)
 - [ ] Testing compiled binary on real iPod hardware
 - [ ] Submit patches upstream to Rockbox project via Gerrit
 
+## Supporting This Project
+
+If this fix is useful to you, consider supporting its development. Every contribution helps keep the project maintained and funds further Rockbox work.
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=github)](https://github.com/sponsors/Tyal13)
+
+This project is and will always be free and open source.
+
 ## Related Projects
 
 - [Rockbox Explicit Content Filter](https://github.com/Tyal13/rockbox-explicit-filter): Automated explicit content detection for Rockbox
