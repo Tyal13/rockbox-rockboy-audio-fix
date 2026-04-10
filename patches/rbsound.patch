@@ -1,5 +1,5 @@
 --- /Users/adam/Library/CloudStorage/GoogleDrive-herrmann.adamm@gmail.com/My Drive/GoogleObsidian/Projects/rockbox-rockboy-audio-fix/src/rbsound.c.orig	2026-04-09 04:54:06
-+++ /Users/adam/Library/CloudStorage/GoogleDrive-herrmann.adamm@gmail.com/My Drive/GoogleObsidian/Projects/rockbox-rockboy-audio-fix/src/rbsound.c	2026-04-09 05:09:58
++++ /Users/adam/Library/CloudStorage/GoogleDrive-herrmann.adamm@gmail.com/My Drive/GoogleObsidian/Projects/rockbox-rockboy-audio-fix/src/rbsound.c	2026-04-09 18:40:10
 @@ -1,87 +1,216 @@
 +/***************************************************************************
 + *             __________               __   ___.
@@ -164,7 +164,7 @@
 -#else
 -    pcm.hz = SAMPR_44;
 -#endif
-+    rb->memset(pcmbuf, 0, sizeof(pcmbuf));
++    memset(pcmbuf, 0, sizeof(pcmbuf));
  
 -    pcm.stereo = 1;
 +    fill_buf   = 0;
@@ -202,7 +202,7 @@
 -    newly_started = true;
      rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
      rb->mixer_set_frequency(HW_SAMPR_DEFAULT);
-+    rb->memset(&pcm, 0, sizeof(pcm));
++    memset(&pcm, 0, sizeof(pcm));
 +    started = false;
 +    ready   = false;
  }

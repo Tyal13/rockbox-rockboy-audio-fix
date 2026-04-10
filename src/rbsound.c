@@ -143,7 +143,7 @@ void rockboy_pcm_init(void)
     pcm.stereo = 1;
     pcm.len    = BUF_SAMPLES;
 
-    rb->memset(pcmbuf, 0, sizeof(pcmbuf));
+    memset(pcmbuf, 0, sizeof(pcmbuf));
 
     fill_buf   = 0;
     submit_buf = 0;
@@ -167,7 +167,7 @@ void rockboy_pcm_close(void)
 {
     rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
     rb->mixer_set_frequency(HW_SAMPR_DEFAULT);
-    rb->memset(&pcm, 0, sizeof(pcm));
+    memset(&pcm, 0, sizeof(pcm));
     started = false;
     ready   = false;
 }
