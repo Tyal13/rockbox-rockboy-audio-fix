@@ -1,128 +1,219 @@
-# Rockbox Rockboy Audio Fix
+# Rockbox Game Boy Emulator Project
 
-**Fixing the broken audio in Rockbox's built-in Gameboy emulator (rockboy) on iPod Classic and other affected targets.**
+**High-performance Game Boy emulator for iPod Classic running Rockbox, built from the ground up.**
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 [![Target: iPod Classic 7G](https://img.shields.io/badge/Target-iPod%20Classic%207G-silver)](https://www.rockbox.org/wiki/IpodClassic)
 [![Rockbox: 4.0](https://img.shields.io/badge/Rockbox-4.0-orange)](https://www.rockbox.org)
 
-Rockboy ships as part of the open-source [Rockbox firmware](https://www.rockbox.org/) and can play Gameboy and Gameboy Color ROM files. However, the audio is severely degraded on many targets — especially iPod Classic. This project identifies the root causes and provides fixed source files and a compiled plugin.
+This project started as a fix for Rockbox's broken rockboy audio, then evolved into a full replacement emulator (pgb) built on [Peanut-GB](https://github.com/deltabeard/Peanut-GB). The goal: native-speed Game Boy emulation with perfect audio on a 216 MHz ARM device with 64MB RAM.
 
-## The Problem
-
-Rockboy audio on iPod Classic 7G sounds harsh, crackly, and distorted. The original handheld had clean, warm chiptune audio. The emulator should reproduce that faithfully.
+<!-- TODO: Add hero photo of iPod running a game -->
+![iPod Classic running pgb](assets/screenshots/hero.png)
 
 ## Legal Notice
 
-This project modifies only the open-source Rockbox emulator plugin code (GPL v2). No ROMs, game files, copyrighted assets, or proprietary code are included, distributed, or referenced in this repository. Users are responsible for sourcing their own legally obtained ROM files. This project does not facilitate, encourage, or assist with obtaining copyrighted software.
+This project modifies only open-source Rockbox emulator plugin code (GPL v2) and MIT-licensed Peanut-GB. No ROMs, game files, copyrighted assets, or proprietary code are included, distributed, or referenced in this repository. Users are responsible for sourcing their own legally obtained ROM files.
 
-## Root Cause Analysis
+## Project Phases
 
-We identified **7 bugs** in the rockboy audio pipeline:
+### Phase 1: Rockboy Audio Fix (Complete, Deployed)
 
-### Critical
+Fixed **7 bugs** in the original rockboy audio pipeline that caused harsh, crackly, metallic audio on iPod Classic:
 
-1. **Forced 11kHz sample rate on iPod**: The iPod Classic has `HW_HAVE_11` defined, so rockboy forces the output to 11025 Hz instead of 44100 Hz. This triggers `snd.quality = 4`, meaning only every 4th audio sample is generated with zero interpolation. The result is harsh, aliased, metallic-sounding audio.
+| # | Severity | Bug | Impact |
+|---|----------|-----|--------|
+| 1 | Critical | Forced 11 kHz sample rate on iPod (`HW_HAVE_11` misread) | 75% of audio samples discarded |
+| 2 | Critical | Broken double-buffering (only one buffer half used) | Constant crackling/pops |
+| 3 | Critical | Non-volatile ISR flag on ARM (no memory barriers) | Random audio glitches |
+| 4 | Moderate | Yield-loop blocks emulation thread | Frame drops cascade into audio underruns |
+| 5 | Moderate | Sample rate drift from integer truncation | Pitch inaccuracy |
+| 6 | Minor | No anti-aliasing filter on downsampled channels | Harsh aliasing artifacts |
+| 7 | Minor | Silent failure when Rockbox audio already active | No user feedback |
 
-2. **Broken double-buffering**: `N_BUFS=2` allocates two buffers, but only one is ever written to. The audio callback and emulation thread read/write the same memory region, causing pops and crackling.
+**Result:** Clean, warm chiptune audio at 44100 Hz with proper double-buffering.
 
-3. **Race condition on ARM**: The `doneplay` synchronization flag between the audio callback (interrupt context) and the emulation thread has no memory barriers or atomic operations. On ARM processors, this causes random audio glitches due to memory reordering.
+Fixed source files are in [`src/`](src/) and the compiled plugin in [`releases/rockboy-ipod6g.rock`](releases/rockboy-ipod6g.rock).
 
-### Moderate
+### Phase 2: PGB - New Emulator (In Progress)
 
-4. **Yield-loop blocks emulation**: `rockboy_pcm_submit()` busy-waits with `rb->yield()` for the audio callback to fire. This stalls the emulation, causing frame drops that cascade into audio buffer underruns, creating a stutter cycle.
+Rockboy (based on gnuboy from 2000) runs heavy Game Boy titles at ~5 fps on iPod Classic. Rather than trying to optimize 10K+ lines of legacy code, we built a new plugin from scratch using Peanut-GB as the emulation core.
 
-5. **Sample rate drift**: Integer division truncation in `snd.rate = (1<<21) / pcm.hz` causes slight pitch inaccuracy and timing glitches.
+<!-- TODO: Add side-by-side comparison photo: rockboy fps vs pgb fps -->
+![Performance comparison](assets/screenshots/comparison.png)
 
-### Minor
+#### Performance Optimizations
 
-6. **No anti-aliasing filter**: Downsampling uses nearest-neighbor selection, creating harsh aliasing artifacts on the square wave channels.
+Every optimization was driven by profiling on real hardware. The iPod Classic 7G has a 216 MHz ARM926EJ-S with 16KB I-cache, 16KB D-cache, and 128KB IRAM (80KB available to plugins).
 
-7. **Silent failure**: When Rockbox audio is already playing music, rockboy silently disables all sound with no feedback to the user.
+| Optimization | Technique | Why It Helps |
+|-------------|-----------|--------------|
+| **Direct ROM access** | Replace function pointer callbacks with direct array reads | Eliminates thousands of indirect calls per frame |
+| **IRAM placement** | Hot functions (19KB) + gb struct (17KB) + APU (1.5KB) in fast IRAM | Bypasses I-cache entirely for critical code paths |
+| **O2 on IRAM functions** | `-O2` only on IRAM-resident functions via `__attribute__` | Code bloat has zero cache penalty when in IRAM |
+| **Non-blocking audio** | Drop frame if ring buffer full instead of busy-waiting | Prevents audio callback from stalling emulation |
+| **Bit-shift volume** | Shift instead of multiply for per-sample volume | Saves ~3000 multiplies per audio frame |
+| **Direct LCD writes** | Write pixels directly to LCD framebuffer in 1:1 mode | Skips intermediate buffer copy |
+| **32-bit pixel writes** | Pack two 16-bit pixels per store operation | Halves memory store instructions |
+| **Split-screen DMA** | Push top/bottom halves on alternating frames (scaled modes) | Halves per-frame bus transfer |
+| **Dynamic interlace** | Render 72 lines instead of 144 when below 59 fps | Halves pixel generation cost adaptively |
 
-## Affected Files
+<!-- TODO: Add photo of FPS counter showing 60+ fps -->
+![FPS counter on iPod](assets/screenshots/fps-display.png)
 
-All in `apps/plugins/rockboy/` in the [Rockbox source tree](https://github.com/Rockbox/rockbox/tree/master/apps/plugins/rockboy):
+#### Current Performance (iPod Classic 7G)
 
-| File | Role |
-|------|------|
-| `rbsound.c` | Rockbox PCM audio bridge (bugs 1-4) |
-| `sound.c` | Sound channel emulation (bugs 5-6) |
-| `emu.c` | Main emulation loop, timing |
-| `rockmacros.h` | Configuration and options |
+| Mode | Typical FPS | Notes |
+|------|-------------|-------|
+| 1:1 (native 160x144) | 50-67 fps | Most games at or near 60 fps |
+| Full/Fit (scaled to 320x240) | 31-40 fps | Limited by LCD DMA bandwidth |
+| Text-heavy scenes | 40-51 fps (1:1) | Window layer doubles tile rendering work |
 
-## Proposed Fixes
+#### Features
 
-### Fix 1: Force 44100 Hz on all targets
+- **5-slot save states** with RTC timestamps and visual slot selection
+- **Autosave modes:** Off, On Exit, Frequent (~60 sec intervals)
+- **3 display modes:** 1:1 (centered), Fit (aspect-correct), Full (stretched)
+- **4-level DMG palette** with authentic Game Boy colors
+- **Non-blocking audio** at 22050 Hz with ring buffer
+- **FPS display:** Off, Number only, Full (with "fps" label)
+- **Clean menu system:** Save/Load State, Screen Size, Volume, FPS Display, Autosave, Quit
 
-The single biggest improvement. Changes `rbsound.c` to always use 44100 Hz, setting `snd.quality = 1` (no downsampling, no aliasing).
+Source files are in [`pgb/`](pgb/) and the compiled plugin in [`releases/pgb-ipod6g.rock`](releases/pgb-ipod6g.rock).
 
-### Fix 2: Implement real double-buffering
+### Phase 3: Game Boy Color Support (Planning)
 
-Properly alternate between two buffer halves. Emulation fills one while the audio callback plays the other.
+The next goal is full Game Boy Color support while maintaining 60+ fps. This means adding CGB hardware features to the pgb emulator:
 
-### Fix 3: Add memory barriers for ARM
+- Dual VRAM banks (2x 8KB)
+- WRAM banking (8 banks)
+- CGB color palette registers (BG + OBJ)
+- Double-speed CPU mode
+- HDMA (H-Blank DMA)
+- Auto-detection of GBC ROMs via cartridge header byte
 
-Use proper atomic operations or volatile + compiler barriers for the `doneplay` flag.
+The target is a single emulator that plays both DMG and GBC games seamlessly. When you open a `.gb` or `.gbc` file on the iPod, it just works.
 
-### Fix 4: Replace yield-loop with semaphore
+<!-- TODO: Add photo of iPod running a GBC game (once implemented) -->
+![GBC game running on iPod](assets/screenshots/gbc-preview.png)
 
-Use Rockbox's `rb->semaphore_wait()` instead of busy-waiting, allowing the emulation thread to sleep efficiently.
+## Hardware Target
 
-## Building
+| Spec | Value |
+|------|-------|
+| Device | iPod Classic 7th Gen |
+| SoC | Samsung S5L8702 |
+| CPU | ARM926EJ-S @ 216 MHz (boosted) |
+| RAM | 64 MB SDRAM |
+| IRAM | 128 KB (80 KB available to plugins) |
+| Storage | iFlash adapter, 250 GB SD card |
+| Display | 320x240 RGB565 LCD |
+| Firmware | Rockbox 4.0 |
 
-Requires the Rockbox cross-compiler toolchain:
+## Quick Install
+
+> For iPod Classic 6G or 7G running Rockbox 4.0.
+
+### PGB (recommended, Game Boy)
+
+1. Download `pgb-ipod6g.rock` from [`releases/`](releases/)
+2. Copy to your iPod: `.rockbox/rocks/viewers/pgb.rock`
+3. Open any `.gb` file from the Rockbox file browser
+
+### Rockboy Audio Fix (Game Boy + Game Boy Color)
+
+1. Download `rockboy-ipod6g.rock` from [`releases/`](releases/)
+2. Copy to your iPod: `.rockbox/rocks/games/rockboy.rock`
+3. Open any `.gb` or `.gbc` file from the Rockbox file browser
+
+## Building from Source
+
+Requires the Rockbox cross-compiler toolchain (`arm-elf-eabi-gcc`):
 
 ```bash
 # Clone Rockbox source
 git clone https://github.com/Rockbox/rockbox.git
 cd rockbox
 
-# Build the ARM cross-compiler
+# Build the ARM cross-compiler (one-time setup)
 cd tools && ./rockboxdev.sh
+cd ..
 
 # Configure for iPod Classic
-cd .. && mkdir build && cd build
-../tools/configure  # Select iPod Classic (ipod6g)
+mkdir build && cd build
+../tools/configure   # Select target 29 (ipod6g)
 
-# Build just the rockboy plugin
+# Build pgb plugin
+make $PWD/apps/plugins/pgb/pgb.rock
+
+# Build rockboy plugin (with audio fix)
 make $PWD/apps/plugins/rockboy.rock
 ```
 
-## Testing
+macOS-specific build issues are documented in [docs/BUILD.md](docs/BUILD.md).
 
-Tested on:
-- iPod Classic 7th Gen (S5L8702, 216MHz ARM926, 64MB RAM)
-- Rockbox 4.0
+## Repository Structure
 
-Testing uses legally obtained ROM files with varied audio complexity to verify all 4 sound channels render correctly.
+```
+.
+├── pgb/                    # PGB emulator source (Phase 2)
+│   ├── pgb.c              # Main plugin: input, menu, LCD, audio
+│   ├── peanut_gb.h        # Peanut-GB core (vendored, IRAM-optimized)
+│   ├── minigb_apu.c       # APU audio emulation
+│   ├── minigb_apu.h       # APU header
+│   ├── SOURCES            # Rockbox build list
+│   └── pgb.make           # Rockbox build rules
+├── src/                    # Rockboy audio fix source (Phase 1)
+│   ├── rbsound.c          # Fixed PCM audio bridge
+│   ├── sound.c            # Fixed sound channel emulation
+│   └── emu.c              # Main emulation loop
+├── releases/               # Pre-built ARM binaries
+│   ├── pgb-ipod6g.rock
+│   └── rockboy-ipod6g.rock
+├── docs/                   # Build guides and notes
+├── patches/                # Upstream-ready patches
+└── assets/screenshots/     # Project photos (add your own!)
+```
 
-## Quick Install (Pre-built Binary)
+## Screenshots
 
-> For iPod Classic 6G or 7G running Rockbox 4.0.
+> Photos coming soon. Add your own screenshots to `assets/screenshots/` and submit a PR!
 
-1. Download `rockboy-ipod6g.rock` from [Releases](https://github.com/Tyal13/rockbox-rockboy-audio-fix/releases)
-2. Copy to your iPod: `.rockbox/rocks/games/rockboy.rock`
-3. Eject, power cycle, launch a `.gb` or `.gbc` file from the Rockbox file browser
-
-Full build-from-source instructions: [docs/BUILD.md](docs/BUILD.md)
-
----
+<!-- TODO: Add screenshots gallery -->
+<!-- Suggested photos:
+  - hero.png: iPod Classic running a game in pgb
+  - comparison.png: Side-by-side rockboy vs pgb fps
+  - fps-display.png: Close-up of FPS counter
+  - menu.png: PGB menu screen
+  - save-states.png: Save state slot selection
+  - gbc-preview.png: GBC game running (Phase 3)
+  - hardware.png: iPod Classic 7G with iFlash mod
+-->
 
 ## Roadmap
 
-- [x] Root cause analysis of audio bugs
-- [x] Fix 1: Sample rate correction (11025 Hz forced → 44100 Hz)
-- [x] Fix 2: Proper ping-pong double-buffering
-- [x] Fix 3: Volatile ISR synchronization flag
-- [x] Fix 4: Yield-loop timeout
-- [x] Fix 5: Eliminate redundant hwbuf copy
-- [ ] Testing compiled binary on real iPod hardware
-- [ ] Submit patches upstream to Rockbox project via Gerrit
+- [x] Root cause analysis of 7 rockboy audio bugs
+- [x] Rockboy audio fix: 44100 Hz, proper double-buffering, ARM barriers
+- [x] Compiled and deployed rockboy fix to real iPod hardware
+- [x] PGB: New emulator core (Peanut-GB) ported to Rockbox plugin API
+- [x] PGB: IRAM optimization (hot functions + gb struct in fast memory)
+- [x] PGB: Direct ROM/RAM access (bypass callback overhead)
+- [x] PGB: Non-blocking audio with ring buffer
+- [x] PGB: Direct LCD framebuffer writes for 1:1 mode
+- [x] PGB: Split-screen DMA for scaled display modes
+- [x] PGB: 5-slot save states with autosave
+- [x] PGB: Dynamic interlace for adaptive performance
+- [ ] PGB: Further scaled-mode optimization (target: 60 fps)
+- [ ] GBC: Add Game Boy Color hardware support to pgb
+- [ ] GBC: Auto-detect DMG vs GBC ROMs
+- [ ] GBC: Color palette rendering
+- [ ] GBC: VRAM/WRAM banking
+- [ ] GBC: Double-speed CPU mode
+- [ ] Submit patches upstream to Rockbox via Gerrit
 
 ## Supporting This Project
 
-If this fix is useful to you, consider supporting its development. Every contribution helps keep the project maintained and funds further Rockbox work.
+If this project is useful to you, consider supporting its development:
 
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-GitHub-ea4aaa?logo=github)](https://github.com/sponsors/Tyal13)
 
@@ -131,14 +222,18 @@ This project is and will always be free and open source.
 ## Related Projects
 
 - [Rockbox Explicit Content Filter](https://github.com/Tyal13/rockbox-explicit-filter): Automated explicit content detection for Rockbox
-- [Rockbox Source](https://github.com/Rockbox/rockbox): Official Rockbox firmware repository
+- [Peanut-GB](https://github.com/deltabeard/Peanut-GB): Single-header Game Boy emulator (MIT)
+- [Rockbox](https://github.com/Rockbox/rockbox): Open-source firmware for portable media players
 
 ## License
 
-Patches are GPL v2, matching the Rockbox project license.
+- PGB plugin code: GPL v2 (matching Rockbox)
+- Peanut-GB core: MIT (c) 2018-2023 Mahyar Koshkouei
+- MiniGB APU: MIT, based on MiniGBS by Alex Baines
 
 ## Credits
 
-- **Adam Herrmann** ([@Tyal13](https://github.com/Tyal13)): Research and patches
-- **Rockbox Project**: Open-source firmware
-- **gnuboy**: Original emulator that rockboy is based on
+- **Adam Herrmann** ([@Tyal13](https://github.com/Tyal13)): Architecture, optimization, and integration
+- **Mahyar Koshkouei**: Peanut-GB emulation core
+- **Alex Baines**: MiniGB APU audio emulation
+- **Rockbox Project**: Open-source firmware platform

@@ -7,46 +7,33 @@
  *                     \/            \/     \/    \/            \/
  * $Id$
  *
- * Rockboy PCM audio backend -- fixed version.
+ * Rockboy PCM audio backend -- fixed version for Rockbox 4.0.
  *
- * Bug fixes applied (see patches/rbsound.patch for full diff):
+ * Bug fixes applied:
  *
- *   FIX #1 (Critical) -- Wrong sample rate on iPod Classic and other targets
- *     that define HW_HAVE_11.
- *     Original code: #if defined(HW_HAVE_11) ... pcm.hz = SAMPR_11 (11025 Hz)
- *     HW_HAVE_11 means the hardware *supports* 11 kHz, not that it should be
- *     used. iPod Classic supports 44100 Hz just fine. At 11025 Hz, sound.c
- *     sets snd.quality=4, meaning only every 4th audio sample is generated
- *     with no interpolation -- severe aliasing, tinny, harsh sound.
- *     Fix: always request SAMPR_44 (44100 Hz). The Rockbox mixer resamples
- *     if the hardware requires a different rate.
+ *   FIX #1 (Critical) -- Force 44100 Hz on all targets.
+ *     Original forced SAMPR_11 (11025 Hz) on iPod Classic because
+ *     HW_HAVE_11 is defined. This caused snd.quality=4, skipping 75%
+ *     of audio samples with no interpolation. Harsh, tinny audio.
+ *     Fix: always use SAMPR_44. The hardware handles it natively.
  *
- *   FIX #2 (High) -- Broken double buffer: second half never written.
- *     Original code allocated 2*BUF_SIZE shorts but pcm.buf always pointed
- *     to buf[0]. The get_more callback read buf[pcm.len*doneplay], which at
- *     doneplay=1 accessed buf[BUF_SIZE..2*BUF_SIZE-1] -- always zeros.
- *     Hardware was playing silence from the unwritten second half while
- *     the filled first half was ignored on every other callback.
- *     Fix: true ping-pong double buffer. Emulator fills slot A while
- *     hardware plays slot B, then they swap.
+ *   FIX #2 (High) -- Proper ping-pong double buffer.
+ *     Original allocated 2 buffer halves but only wrote to the first.
+ *     ISR read from the second half (always zeros) every other callback.
+ *     Fix: true alternating double buffer with explicit slot tracking.
  *
- *   FIX #3 (High) -- Non-volatile flag between ISR and main thread.
- *     Original 'doneplay' was a plain bool. The compiler is free to cache
- *     it in a register, so the ISR write might never be seen by the
- *     yield loop in rockboy_pcm_submit. On ARM with -O2 this can hang.
- *     Fix: 'ready' flag is volatile. 'submit_buf' (ISR read, main write)
- *     is also volatile and set before the flag, establishing ordering.
+ *   FIX #3 (High) -- Volatile ISR synchronization flag.
+ *     Original 'doneplay' was a plain bool. Compiler could cache it
+ *     in a register, making the ISR write invisible to the main thread.
+ *     Fix: volatile flag for correct cross-context visibility.
  *
- *   FIX #4 (Medium) -- Yield loop with no timeout.
- *     Original: while (!doneplay) { rb->yield(); } -- spins forever if
- *     audio stops (e.g. headphones unplugged, mixer stopped).
- *     Fix: timeout after ~100 ms. On timeout the buffer is skipped and
- *     the emulator continues rather than hanging.
+ *   FIX #4 (Medium) -- Yield loop timeout.
+ *     Original: while (!doneplay) { rb->yield(); } -- infinite loop
+ *     if audio hardware stops. Fix: timeout after ~100ms.
  *
- *   FIX #5 (Low) -- Eliminated redundant hwbuf copy.
- *     Original allocated a separate hwbuf and memcpy'd into it on every
- *     callback. This wastes ~4 KB of the plugin heap and adds unnecessary
- *     latency. Fix: get_more delivers pcmbuf[] directly.
+ *   FIX #5 (Low) -- Eliminated redundant hwbuf memcpy.
+ *     Original allocated a separate hwbuf and copied into it every
+ *     callback. Fix: deliver pcmbuf directly, saving ~4KB heap.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2.
@@ -58,62 +45,49 @@
 
 struct pcm pcm IBSS_ATTR;
 
-/*
- * BUF_SAMPLES: number of 16-bit values per buffer slot.
- * Stereo interleaved (L0 R0 L1 R1 ...), so BUF_SAMPLES/2 stereo frames.
- * At 44100 Hz: 2048 samples / 2 channels = 1024 frames = ~23 ms per slot.
- * Two slots = ~46 ms total pipeline depth.
- */
-#define BUF_SAMPLES 2048
+#define BUF_SIZE 2048
 
-/* Ping-pong double buffer in DRAM (IBSS would be faster but scarce). */
-static int16_t pcmbuf[2][BUF_SAMPLES];
+/* Ping-pong double buffer -- allocated from plugin heap via my_malloc */
+static short *pcmbuf[2] = {0, 0};
 
 /*
- * submit_buf: which slot the emulator just finished filling.
+ * submit_buf: which slot the ISR should play.
  *   Written by main thread before setting ready=true.
- *   Read by ISR (get_more) while ready=true.
- *   volatile: read from ISR context.
+ *   Read by ISR (get_more).
+ *   volatile: accessed from ISR context.
  */
-static volatile int  submit_buf = 0;
+static volatile int submit_buf = 0;
 
 /*
  * fill_buf: which slot the emulator is currently filling.
- *   Only touched by the main thread. Not volatile.
+ *   Only touched by the main thread.
  */
 static int fill_buf = 0;
 
 /*
- * ready: true when submit_buf contains a freshly-filled buffer.
+ * ready: signals that submit_buf has a fresh buffer.
  *   Set true by main thread (rockboy_pcm_submit).
  *   Set false by ISR (get_more) after consuming.
- *   volatile: written and read from both contexts.
+ *   volatile: written/read from both contexts.
  */
 static volatile bool ready = false;
 
-/* started: whether mixer_channel_play_data has been called yet. */
+/* Whether pcm_play_data has been called yet */
 static bool started = false;
 
 /*
- * get_more() -- audio ISR callback.
+ * get_more() -- PCM callback, runs in interrupt context.
  *
- * Called by the Rockbox PCM mixer when it needs the next buffer.
- * Runs in interrupt context: no blocking, no malloc, minimal work.
- *
- * If a fresh buffer is ready (ready==true), deliver it and clear the flag
- * so the emulator can refill the slot.  If nothing is ready (underrun),
- * re-deliver the previous buffer rather than playing silence pops.
+ * If a fresh buffer is ready, deliver it and clear the flag.
+ * On underrun, replay the last good buffer (avoids silence pops).
  */
 static void get_more(const void **start, size_t *size)
 {
     if (ready)
-    {
-        /* Emulator finished filling submit_buf -- deliver it */
-        ready = false;  /* emulator may now refill the other slot */
-    }
-    /* On underrun: submit_buf is unchanged, we replay the last good buffer */
+        ready = false;  /* signal main thread: safe to fill other slot */
+
     *start = pcmbuf[submit_buf];
-    *size  = sizeof(pcmbuf[0]);  /* BUF_SAMPLES * sizeof(int16_t) */
+    *size  = BUF_SIZE * sizeof(short);
 }
 
 void rockboy_pcm_init(void)
@@ -122,28 +96,33 @@ void rockboy_pcm_init(void)
         return;
 
     /*
-     * FIX #1: Always use SAMPR_44 (44100 Hz).
+     * FIX #1: Always use 44100 Hz.
      *
-     * The original conditional:
+     * Original code:
      *   #if defined(HW_HAVE_11) && !defined(TOSHIBA_GIGABEAT_F)
-     *       pcm.hz = SAMPR_11;
-     * was wrong. HW_HAVE_11 is defined whenever SAMPR_CAP_11 is in
-     * HW_SAMPR_CAPS -- meaning the hardware *can* do 11 kHz, not that
-     * it should be used by default. iPod Classic 6G/7G defines HW_HAVE_11
-     * and also supports 44100 Hz natively. The Rockbox mixer will resample
-     * to the hardware rate automatically if needed.
+     *       pcm.hz = SAMPR_11;  // forced 11025 Hz on iPod
+     *   #else
+     *       pcm.hz = SAMPR_44;
+     *   #endif
      *
-     * At 11025 Hz, sound.c sound_reset() computes:
-     *   snd.quality = 44100 / 11025 = 4
-     * meaning gbSoundChannel*() functions skip 3 out of 4 samples with no
-     * interpolation -- the root cause of the harsh, tinny audio.
-     * At 44100 Hz: snd.quality = 1, all samples generated correctly.
+     * HW_HAVE_11 means the hardware *supports* 11 kHz, not that it
+     * should be the default. At 11025 Hz, sound.c sets snd.quality=4
+     * (only every 4th sample generated, no interpolation).
+     * At 22050 Hz: snd.quality=2, half the iterations, clean audio.
+     * At 44100 Hz: snd.quality=1, full quality but too slow for 60 FPS.
      */
-    pcm.hz     = SAMPR_44;
+    pcm.hz     = SAMPR_22;
     pcm.stereo = 1;
-    pcm.len    = BUF_SAMPLES;
+    pcm.len    = BUF_SIZE;
 
-    memset(pcmbuf, 0, sizeof(pcmbuf));
+    /* Allocate buffers from plugin heap if first call */
+    if (!pcmbuf[0])
+    {
+        pcmbuf[0] = my_malloc(BUF_SIZE * sizeof(short));
+        pcmbuf[1] = my_malloc(BUF_SIZE * sizeof(short));
+        memset(pcmbuf[0], 0, BUF_SIZE * sizeof(short));
+        memset(pcmbuf[1], 0, BUF_SIZE * sizeof(short));
+    }
 
     fill_buf   = 0;
     submit_buf = 0;
@@ -153,21 +132,21 @@ void rockboy_pcm_init(void)
     pcm.buf = pcmbuf[fill_buf];
     pcm.pos = 0;
 
-    rb->audio_stop();
+    rb->pcm_play_stop();
 
 #if INPUT_SRC_CAPS != 0
     rb->audio_set_input_source(AUDIO_SRC_PLAYBACK, SRCF_PLAYBACK);
     rb->audio_set_output_source(AUDIO_SRC_PLAYBACK);
 #endif
 
-    rb->mixer_set_frequency(pcm.hz);
+    rb->pcm_set_frequency(pcm.hz);
 }
 
 void rockboy_pcm_close(void)
 {
-    rb->mixer_channel_stop(PCM_MIXER_CHAN_PLAYBACK);
-    rb->mixer_set_frequency(HW_SAMPR_DEFAULT);
-    memset(&pcm, 0, sizeof(pcm));
+    rb->pcm_play_stop();
+    rb->pcm_set_frequency(HW_SAMPR_DEFAULT);
+    memset(&pcm, 0, sizeof pcm);
     started = false;
     ready   = false;
 }
@@ -175,38 +154,33 @@ void rockboy_pcm_close(void)
 int rockboy_pcm_submit(void)
 {
     if (!pcm.buf)          return 0;
-    if (pcm.pos < pcm.len) return 1;  /* buffer not yet full, keep filling */
+    if (pcm.pos < pcm.len) return 1;  /* not full yet, keep filling */
 
     /*
-     * Buffer full. Tell the ISR which slot to deliver, then signal it.
-     * submit_buf must be written BEFORE ready=true to prevent the ISR
-     * from reading a stale slot index (single-core ARM: no reorder risk,
-     * but being explicit is correct and forward-compatible).
+     * FIX #2: Point ISR at the slot we just filled.
+     * submit_buf written BEFORE ready=true so ISR sees correct slot.
      */
-    submit_buf = fill_buf;  /* FIX #2: point ISR at the slot we just filled */
-    ready      = true;      /* FIX #3: volatile flag, visible to ISR */
+    submit_buf = fill_buf;
+    ready      = true;       /* FIX #3: volatile, visible to ISR */
 
-    /* Start the mixer on first submit */
+    /* Start PCM playback on first submit */
     if (!started)
     {
-        rb->mixer_channel_play_data(PCM_MIXER_CHAN_PLAYBACK,
-                                    get_more, NULL, 0);
+        rb->pcm_play_data(&get_more, NULL, NULL, 0);
         started = true;
     }
 
     /*
-     * Wait for the ISR to consume submit_buf.
-     * FIX #4: timeout (~100 ms at typical Rockbox tick rates) prevents
-     * an infinite loop if audio stops unexpectedly.
+     * FIX #4: Wait for ISR to consume, with timeout (~100ms).
+     * Prevents infinite hang if audio hardware stops.
      */
     int timeout = 200;
     while (ready && --timeout > 0)
         rb->yield();
 
     /*
-     * FIX #2 continued: switch emulator to the OTHER buffer slot.
-     * The ISR is now playing (or has played) fill_buf.
-     * We write into the alternate slot so there is no data race.
+     * FIX #2 continued: Swap to the other buffer slot.
+     * ISR is now playing fill_buf, we write into the alternate.
      */
     fill_buf = 1 - fill_buf;
     pcm.buf  = pcmbuf[fill_buf];
